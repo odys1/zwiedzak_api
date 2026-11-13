@@ -9,6 +9,27 @@ data class RegisterRequest(
     val password: String
 )
 
+data class RegistrationResponse(
+    @SerializedName("status")
+    val status: String?,
+    @SerializedName("expiresIn")
+    val expiresIn: Int,
+    @SerializedName("resendAfter")
+    val resendAfter: Int
+)
+
+data class VerifyRegistrationRequest(
+    @SerializedName("email")
+    val email: String,
+    @SerializedName("code")
+    val code: String
+)
+
+data class ResendRegistrationRequest(
+    @SerializedName("email")
+    val email: String
+)
+
 data class LoginRequest(
     @SerializedName("email")
     val email: String,

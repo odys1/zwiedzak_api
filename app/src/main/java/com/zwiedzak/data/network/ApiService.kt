@@ -5,6 +5,9 @@ import com.zwiedzak.data.model.LoginRequest
 import com.zwiedzak.data.model.NearbyPlacesResponse
 import com.zwiedzak.data.model.Place
 import com.zwiedzak.data.model.RegisterRequest
+import com.zwiedzak.data.model.RegistrationResponse
+import com.zwiedzak.data.model.ResendRegistrationRequest
+import com.zwiedzak.data.model.VerifyRegistrationRequest
 import com.zwiedzak.data.model.AddPlaceImageRequest
 import com.zwiedzak.data.model.CreatePlaceRequest
 import com.zwiedzak.data.model.SubmitRatingRequest
@@ -21,7 +24,17 @@ interface ApiService {
     @POST("api/v1/auth/register")
     suspend fun register(
         @Body request: RegisterRequest
+    ): RegistrationResponse
+
+    @POST("api/v1/auth/register/verify")
+    suspend fun verifyRegistration(
+        @Body request: VerifyRegistrationRequest
     ): AuthResponse
+
+    @POST("api/v1/auth/register/resend")
+    suspend fun resendRegistration(
+        @Body request: ResendRegistrationRequest
+    )
 
     @POST("api/v1/auth/login")
     suspend fun login(
