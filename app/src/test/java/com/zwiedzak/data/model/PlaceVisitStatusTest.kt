@@ -2,9 +2,23 @@ package com.zwiedzak.data.model
 
 import com.google.gson.Gson
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlaceVisitStatusTest {
+
+    @Test
+    fun visitedCheckboxIncludesAvoidAndExcludesPlanned() {
+        assertTrue(VisitStatus.VISITED.isVisited)
+        assertTrue(VisitStatus.AVOID.isVisited)
+        assertFalse(VisitStatus.PLANNED.isVisited)
+        val place = Gson().fromJson(
+            """{"id":"1","name":"Miejsce","visitStatus":null,"lastVisitedAt":null}""",
+            Place::class.java
+        )
+        assertFalse(place.visitState.isVisited)
+    }
 
     @Test
     fun parsesVisitStatusAndMarkerColorFromApi() {

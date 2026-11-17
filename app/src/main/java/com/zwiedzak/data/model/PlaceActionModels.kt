@@ -2,6 +2,18 @@ package com.zwiedzak.data.model
 
 import com.google.gson.annotations.SerializedName
 
+data class PlaceCategory(
+    @SerializedName("code")
+    val code: String,
+    @SerializedName("name")
+    val name: String
+)
+
+data class CategoriesResponse(
+    @SerializedName("items")
+    val items: List<PlaceCategory>
+)
+
 data class CreatePlaceRequest(
     @SerializedName("name")
     val name: String,
@@ -22,12 +34,32 @@ data class CreatePlaceRequest(
     @SerializedName("visibility")
     val visibility: String,
     @SerializedName("confirmDistinct")
-    val confirmDistinct: Boolean
+    val confirmDistinct: Boolean,
+    @SerializedName("visited")
+    val visited: Boolean
 )
 
 data class UpdateVisitStatusRequest(
     @SerializedName("status")
     val status: String
+)
+
+data class PlaceVisit(
+    @SerializedName("id")
+    val id: String,
+    @SerializedName("visitedAt")
+    val visitedAt: String
+)
+
+data class PlaceVisitsResponse(
+    @SerializedName("items")
+    val items: List<PlaceVisit>,
+    @SerializedName("limit")
+    val limit: Int,
+    @SerializedName("offset")
+    val offset: Int,
+    @SerializedName("hasMore")
+    val hasMore: Boolean
 )
 
 data class AddPlaceImageRequest(

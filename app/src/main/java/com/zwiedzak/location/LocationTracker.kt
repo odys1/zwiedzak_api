@@ -11,6 +11,7 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 
 class LocationTracker(private val context: Context) {
@@ -29,6 +30,25 @@ class LocationTracker(private val context: Context) {
         ) == PackageManager.PERMISSION_GRANTED
 
         return fineLocationGranted || coarseLocationGranted
+    }
+
+    @SuppressLint("MissingPermission")
+    suspend fun getFreshLocation(): Location? {
+        if (!hasLocationPermission()) return null
+        return withTimeoutOrNull(15_000) {
+            suspendCancellableCoroutine { continuation ->
+                val token = CancellationTokenSource()
+                continuation.invokeOnCancellation { token.cancel() }
+                fusedLocationClient.getCurrentLocation(
+                    Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+                    token.token
+                ).addOnSuccessListener { location ->
+                    if (continuation.isActive) continuation.resume(location)
+                }.addOnFailureListener {
+                    if (continuation.isActive) continuation.resume(null)
+                }
+            }
+        }
     }
 
     @SuppressLint("MissingPermission")

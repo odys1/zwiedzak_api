@@ -71,6 +71,7 @@ fun NearbyPlacesScreen(
     val searchUiState by viewModel.searchUiState.collectAsState()
     val authState by authViewModel.authState.collectAsState()
     val placeActionState by placeActionsViewModel.state.collectAsState()
+    val categoriesState by placeActionsViewModel.categoriesState.collectAsState()
 
     var showServerDialog by remember { mutableStateOf(false) }
     var showProfileDialog by remember { mutableStateOf(false) }
@@ -78,6 +79,7 @@ fun NearbyPlacesScreen(
     var nameQuery by rememberSaveable { mutableStateOf("") }
     var addressQuery by rememberSaveable { mutableStateOf("") }
     var visitFilter by rememberSaveable { mutableStateOf(VisitFilter.ALL) }
+    var filterMine by rememberSaveable { mutableStateOf(false) }
     var filterFood by rememberSaveable { mutableStateOf(false) }
     var filterLodging by rememberSaveable { mutableStateOf(false) }
     var sortAscending by rememberSaveable { mutableStateOf(true) }
@@ -85,6 +87,7 @@ fun NearbyPlacesScreen(
     var appliedNameQuery by rememberSaveable { mutableStateOf("") }
     var appliedAddressQuery by rememberSaveable { mutableStateOf("") }
     var appliedVisitFilter by rememberSaveable { mutableStateOf(VisitFilter.ALL) }
+    var appliedFilterMine by rememberSaveable { mutableStateOf(false) }
     var appliedFilterFood by rememberSaveable { mutableStateOf(false) }
     var appliedFilterLodging by rememberSaveable { mutableStateOf(false) }
     val isAuthenticated = authState is AuthState.Authenticated
@@ -111,12 +114,29 @@ fun NearbyPlacesScreen(
         val coarseGranted = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] ?: false
         if (fineGranted || coarseGranted) {
             viewModel.onPermissionGranted(context, radiusKm * 1000)
+            if (isSearchActive) {
+                viewModel.searchPlaces(context, appliedNameQuery, appliedAddressQuery, appliedVisitedQuery, radiusKm * 1000, appliedFilterMine)
+            }
         }
     }
 
     LaunchedEffect(Unit) {
         viewModel.fetchLocationAndPlaces(context, radiusKm * 1000)
         authViewModel.checkAuthStatus(context)
+    }
+
+    LaunchedEffect(authState) {
+        if (authState is AuthState.Unauthenticated) {
+            filterMine = false
+            visitFilter = VisitFilter.ALL
+            if (appliedFilterMine || appliedVisitFilter != VisitFilter.ALL) {
+                appliedFilterMine = false
+                appliedVisitFilter = VisitFilter.ALL
+                hasAppliedSearch = false
+                viewModel.clearSearch()
+                viewModel.fetchLocationAndPlaces(context, radiusKm * 1000)
+            }
+        }
     }
 
     LaunchedEffect(placeActionState, showAddPlaceDialog) {
@@ -135,9 +155,12 @@ fun NearbyPlacesScreen(
                     IconButton(onClick = {
                         if (isSearchActive) {
                             viewModel.searchPlaces(
+                                context,
                                 appliedNameQuery,
                                 appliedAddressQuery,
-                                appliedVisitedQuery
+                                appliedVisitedQuery,
+                                radiusKm * 1000,
+                                appliedFilterMine
                             )
                         } else {
                             viewModel.fetchLocationAndPlaces(context, radiusKm * 1000)
@@ -170,7 +193,7 @@ fun NearbyPlacesScreen(
                     IconButton(onClick = { showServerDialog = true }) {
                         Icon(
                             imageVector = Icons.Default.Settings,
-                            contentDescription = "Ustawienia API"
+                            contentDescription = "Ustawienia"
                         )
                     }
                 },
@@ -185,6 +208,7 @@ fun NearbyPlacesScreen(
                 onClick = {
                     if (isAuthenticated) {
                         placeActionsViewModel.clearState()
+                        placeActionsViewModel.loadCategories()
                         showAddPlaceDialog = true
                     } else {
                         onAuthClick()
@@ -255,15 +279,24 @@ fun NearbyPlacesScreen(
                         Button(onClick = {
                             if (isSearchActive) {
                                 viewModel.searchPlaces(
+                                    context,
                                     appliedNameQuery,
                                     appliedAddressQuery,
-                                    appliedVisitedQuery
+                                    appliedVisitedQuery,
+                                    radiusKm * 1000,
+                                    appliedFilterMine
                                 )
                             } else {
                                 viewModel.fetchLocationAndPlaces(context, radiusKm * 1000)
                             }
                         }) {
                             Text("Spróbuj ponownie")
+                        }
+                        if (isSearchActive) {
+                            TextButton(onClick = {
+                                hasAppliedSearch = false
+                                viewModel.clearSearch()
+                            }) { Text("Wróć do filtrów") }
                         }
                     }
                 }
@@ -353,7 +386,10 @@ fun NearbyPlacesScreen(
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "Brak aktywnego serwera API (${RetrofitInstance.getBaseUrl()}) – wyświetlam dane demonstracyjne.",
+                                        text = buildString {
+                                            append("Brak połączenia z API (${RetrofitInstance.getBaseUrl()}) – wyświetlam dane demonstracyjne.")
+                                            state.apiErrorMessage?.let { append("\nBłąd: $it") }
+                                        },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSecondaryContainer
                                     )
@@ -469,6 +505,15 @@ fun NearbyPlacesScreen(
                         ) {
                             item {
                                 FilterChip(
+                                    selected = filterMine,
+                                    onClick = {
+                                        if (isAuthenticated) filterMine = !filterMine else onAuthClick()
+                                    },
+                                    label = { Text("Tylko moje") }
+                                )
+                            }
+                            item {
+                                FilterChip(
                                     selected = filterLodging,
                                     onClick = { filterLodging = !filterLodging },
                                     label = { Text("Hotel") }
@@ -488,10 +533,12 @@ fun NearbyPlacesScreen(
                                 appliedNameQuery = nameQuery.trim()
                                 appliedAddressQuery = addressQuery.trim()
                                 appliedVisitFilter = visitFilter
+                                appliedFilterMine = filterMine && isAuthenticated
                                 appliedFilterFood = filterFood
                                 appliedFilterLodging = filterLodging
                                 hasAppliedSearch = true
                                 viewModel.searchPlaces(
+                                    context = context,
                                     name = nameQuery.trim(),
                                     address = addressQuery.trim(),
                                     visited = when {
@@ -499,7 +546,9 @@ fun NearbyPlacesScreen(
                                         visitFilter == VisitFilter.VISITED -> true
                                         visitFilter == VisitFilter.NOT_VISITED -> false
                                         else -> null
-                                    }
+                                    },
+                                    radiusMeters = radiusKm * 1000,
+                                    mine = filterMine && isAuthenticated
                                 )
                             },
                             modifier = Modifier
@@ -547,8 +596,16 @@ fun NearbyPlacesScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = if (state.places.isEmpty() && !isSearchActive) {
-                                        "Serwer API nie zwrócił miejsc w tej okolicy."
+                                    text = if (state.places.isEmpty() &&
+                                        (!isSearchActive ||
+                                            (appliedNameQuery.isBlank() && appliedAddressQuery.isBlank() &&
+                                                appliedVisitedQuery == null))
+                                    ) {
+                                        if (appliedFilterMine && isSearchActive) {
+                                            "Nie znaleziono Twoich miejsc w promieniu $radiusKm km."
+                                        } else {
+                                            "Nie znaleziono miejsc w promieniu $radiusKm km."
+                                        }
                                     } else {
                                         "Brak miejsc spełniających kryteria."
                                     },
@@ -606,15 +663,18 @@ fun NearbyPlacesScreen(
     }
 
     if (showServerDialog) {
-        ServerUrlDialog(
-            currentUrl = RetrofitInstance.getBaseUrl(),
+        SettingsDialog(
             radiusKm = radiusKm,
             onDismiss = { showServerDialog = false },
-            onSave = { newUrl, newRadiusKm ->
-                RetrofitInstance.setBaseUrl(newUrl)
+            onSave = { newRadiusKm ->
                 onRadiusChange(newRadiusKm)
                 showServerDialog = false
                 viewModel.fetchLocationAndPlaces(context, newRadiusKm * 1000)
+                if (isSearchActive) {
+                    viewModel.searchPlaces(
+                        context, appliedNameQuery, appliedAddressQuery, appliedVisitedQuery, newRadiusKm * 1000, appliedFilterMine
+                    )
+                }
             }
         )
     }
@@ -625,11 +685,15 @@ fun NearbyPlacesScreen(
             initialLatitude = location?.userLat ?: 52.23,
             initialLongitude = location?.userLng ?: 21.01,
             actionState = placeActionState,
+            categoriesState = categoriesState,
             onDismiss = {
                 showAddPlaceDialog = false
                 placeActionsViewModel.clearState()
             },
-            onSubmit = placeActionsViewModel::createPlace
+            onRetryCategories = placeActionsViewModel::loadCategories,
+            onSubmit = { request, imageUri, caption, _ ->
+                placeActionsViewModel.createPlace(context, request, imageUri, caption)
+            }
         )
     }
 }
@@ -846,31 +910,22 @@ fun PermissionRequiredView(
 }
 
 @Composable
-fun ServerUrlDialog(
-    currentUrl: String,
+fun SettingsDialog(
     radiusKm: Int,
     onDismiss: () -> Unit,
-    onSave: (String, Int) -> Unit
+    onSave: (Int) -> Unit
 ) {
-    var urlText by remember { mutableStateOf(currentUrl) }
     var selectedRadiusKm by remember(radiusKm) { mutableIntStateOf(radiusKm) }
     var showRadiusMenu by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Konfiguracja adresu API") },
+        title = { Text("Ustawienia") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "Domyślny adres API: http://miejsca.webd.pro/zwiedzak/\nWpisz adres bazowy serwera, bez końcówki api/v1. Promień określa odległość od środka do granicy okręgu.",
+                    text = "Promień określa odległość od środka do granicy okręgu.",
                     style = MaterialTheme.typography.bodySmall
-                )
-                OutlinedTextField(
-                    value = urlText,
-                    onValueChange = { urlText = it },
-                    label = { Text("Adres serwera API") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
                 )
                 Box {
                     TextButton(onClick = { showRadiusMenu = true }) {
@@ -902,7 +957,7 @@ fun ServerUrlDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSave(urlText, selectedRadiusKm) }) {
+            TextButton(onClick = { onSave(selectedRadiusKm) }) {
                 Text("Zapisz")
             }
         },

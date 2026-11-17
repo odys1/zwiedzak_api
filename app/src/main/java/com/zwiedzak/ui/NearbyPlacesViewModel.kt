@@ -7,12 +7,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import com.zwiedzak.data.model.Place
+import com.zwiedzak.data.network.ApiService
 import com.zwiedzak.data.network.RetrofitInstance
 import com.zwiedzak.location.LocationTracker
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import retrofit2.HttpException
 
 class NearbyPlacesViewModel : ViewModel() {
 
@@ -35,31 +37,46 @@ class NearbyPlacesViewModel : ViewModel() {
         _selectedPlace.value = place
     }
 
-    fun searchPlaces(name: String, address: String, visited: Boolean?) {
+    fun searchPlaces(context: Context, name: String, address: String, visited: Boolean?, radiusMeters: Int, mine: Boolean = false) {
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             _searchUiState.value = NearbyUiState.Loading
             delay(350)
             try {
-                val response = RetrofitInstance.api.searchPlaces(
-                    name = name.trim().takeIf { it.isNotEmpty() },
-                    address = address.trim().takeIf { it.isNotEmpty() },
-                    visited = visited,
-                    limit = 100
-                )
                 val currentLocation = _uiState.value as? NearbyUiState.Success
-                _searchUiState.value = NearbyUiState.Success(
-                    places = response.items,
-                    userLat = currentLocation?.userLat ?: 52.23,
-                    userLng = currentLocation?.userLng ?: 21.01
+                _searchUiState.value = searchPlacesFromApi(
+                    api = RetrofitInstance.api,
+                    name = name,
+                    address = address,
+                    visited = visited,
+                    mine = mine,
+                    radiusMeters = radiusMeters,
+                    fallbackLocation = currentLocation?.let { it.userLat to it.userLng },
+                    currentLocation = {
+                        val tracker = LocationTracker(context.applicationContext)
+                        if (!tracker.hasLocationPermission()) throw SearchLocationPermissionRequired()
+                        val location = tracker.getCurrentLocation()
+                            ?: throw IllegalStateException("Nie udało się ustalić lokalizacji. Włącz lokalizację i spróbuj ponownie.")
+                        location.latitude to location.longitude
+                    }
                 )
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: SearchLocationPermissionRequired) {
+                _searchUiState.value = NearbyUiState.PermissionRequired
+            } catch (e: HttpException) {
+                val message = if (name.isBlank() && address.isBlank() && visited == null) {
+                    nearbyErrorMessage(e, radiusMeters)
+                } else {
+                    e.localizedMessage ?: "Nie udało się wyszukać miejsc."
+                }
+                _searchUiState.value = NearbyUiState.Error(message)
             } catch (e: Exception) {
                 _searchUiState.value = NearbyUiState.Error(
                     e.localizedMessage ?: "Nie udało się wyszukać miejsc."
                 )
             }
+
         }
     }
 
@@ -95,7 +112,7 @@ class NearbyPlacesViewModel : ViewModel() {
         lat: Double,
         lng: Double,
         radiusMeters: Int = 10000
-    ): NearbyUiState.Success {
+    ): NearbyUiState {
         return try {
             val response = RetrofitInstance.api.getNearbyPlaces(
                 latitude = lat,
@@ -110,12 +127,25 @@ class NearbyPlacesViewModel : ViewModel() {
             )
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (e: HttpException) {
+            if (e.code() == 400 && radiusMeters > 50_000) {
+                NearbyUiState.Error(nearbyErrorMessage(e, radiusMeters))
+            } else {
+                NearbyUiState.Success(
+                    places = getMockPlaces(),
+                    userLat = lat,
+                    userLng = lng,
+                    isMockData = true,
+                    apiErrorMessage = e.localizedMessage ?: e.javaClass.simpleName
+                )
+            }
+        } catch (e: Exception) {
             NearbyUiState.Success(
                 places = getMockPlaces(),
                 userLat = lat,
                 userLng = lng,
-                isMockData = true
+                isMockData = true,
+                apiErrorMessage = e.localizedMessage ?: e.javaClass.simpleName
             )
         }
     }
@@ -209,4 +239,35 @@ class NearbyPlacesViewModel : ViewModel() {
             )
         )
     }
+}
+
+private class SearchLocationPermissionRequired : Exception()
+
+internal fun nearbyErrorMessage(error: HttpException, radiusMeters: Int): String =
+    if (error.code() == 400 && radiusMeters > 50_000) {
+        "Serwer odrzucił zapytanie (HTTP 400). Sprawdź, czy obsługuje promień ${radiusMeters / 1000} km."
+    } else {
+        error.localizedMessage ?: "Nie udało się pobrać miejsc."
+    }
+
+internal suspend fun searchPlacesFromApi(
+    api: ApiService,
+    name: String,
+    address: String,
+    visited: Boolean?,
+    radiusMeters: Int,
+    fallbackLocation: Pair<Double, Double>?,
+    mine: Boolean = false,
+    currentLocation: suspend () -> Pair<Double, Double>
+): NearbyUiState.Success {
+    val nameQuery = name.trim().takeIf { it.isNotEmpty() }
+    val addressQuery = address.trim().takeIf { it.isNotEmpty() }
+    val nearbySearch = nameQuery == null && addressQuery == null && visited == null
+    val location = if (nearbySearch) currentLocation() else fallbackLocation ?: (52.23 to 21.01)
+    val response = if (nearbySearch) {
+        api.getNearbyPlaces(location.first, location.second, radiusMeters, limit = 100, mine = true.takeIf { mine })
+    } else {
+        api.searchPlaces(nameQuery, addressQuery, visited, limit = 100, mine = true.takeIf { mine })
+    }
+    return NearbyUiState.Success(response.items, location.first, location.second)
 }

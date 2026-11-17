@@ -38,6 +38,12 @@ data class Place(
     val ratingsCount: Int? = 0,
     @SerializedName("visitStatus")
     val visitStatus: String? = null,
+    @SerializedName("lastVisitedAt")
+    val lastVisitedAt: String? = null,
+    @SerializedName("canEdit")
+    val canEdit: Boolean = false,
+    @SerializedName("visibility")
+    val visibility: String? = null,
     @SerializedName(value = "isVisited", alternate = ["is_visited"])
     val isVisited: Boolean? = null,
     @SerializedName("markerColor")
@@ -118,6 +124,9 @@ enum class VisitStatus(val apiValue: String, val label: String) {
     PLANNED("planned", "Nieodwiedzone"),
     VISITED("visited", "Odwiedzone"),
     AVOID("avoid", "Odwiedzone · nie wracam");
+
+    val isVisited: Boolean
+        get() = this == VISITED || this == AVOID
 
     companion object {
         fun fromApiValue(value: String?): VisitStatus =

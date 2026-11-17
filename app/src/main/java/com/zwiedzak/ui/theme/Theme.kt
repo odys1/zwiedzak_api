@@ -1,54 +1,70 @@
 package com.zwiedzak.ui.theme
 
-import android.app.Activity
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Color
 
-private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
+internal val DarkColorScheme = darkColorScheme(
+    primary = DarkPrimary,
+    onPrimary = Color(0xFF00363B),
+    primaryContainer = DarkPrimaryContainer,
+    onPrimaryContainer = Color(0xFFB8F0F2),
+    secondary = DarkSecondary,
+    onSecondary = Color(0xFF173B35),
+    secondaryContainer = DarkSecondaryContainer,
+    onSecondaryContainer = Color(0xFFD1EFE6),
+    tertiary = DarkTertiary,
+    onTertiary = Color(0xFF402C00),
+    tertiaryContainer = DarkTertiaryContainer,
+    onTertiaryContainer = Color(0xFFFFE4A5),
+    background = DarkBackground,
+    onBackground = DarkOnSurface,
+    surface = DarkSurface,
+    onSurface = DarkOnSurface,
+    surfaceVariant = DarkSurfaceVariant,
+    onSurfaceVariant = DarkOnSurfaceVariant,
+    surfaceContainerLowest = Color(0xFF1A2D29),
+    surfaceContainerLow = Color(0xFF223831),
+    surfaceContainer = DarkSurface,
+    surfaceContainerHigh = Color(0xFF30463F),
+    surfaceContainerHighest = Color(0xFF3A514A)
 )
 
-private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
+internal val LightColorScheme = lightColorScheme(
+    primary = LightPrimary,
     onPrimary = Color.White,
+    primaryContainer = LightPrimaryContainer,
+    onPrimaryContainer = Color(0xFF00363B),
+    secondary = LightSecondary,
     onSecondary = Color.White,
+    secondaryContainer = LightSecondaryContainer,
+    onSecondaryContainer = Color(0xFF123C35),
+    tertiary = LightTertiary,
     onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+    tertiaryContainer = LightTertiaryContainer,
+    onTertiaryContainer = Color(0xFF281900),
+    background = LightBackground,
+    onBackground = LightOnSurface,
+    surface = LightSurface,
+    onSurface = LightOnSurface,
+    surfaceVariant = LightSurfaceVariant,
+    onSurfaceVariant = LightOnSurfaceVariant,
+    surfaceContainerLowest = Color.White,
+    surfaceContainerLow = Color(0xFFF4FAF6),
+    surfaceContainer = Color(0xFFECF5F0),
+    surfaceContainerHigh = Color(0xFFE5F0EA),
+    surfaceContainerHighest = Color(0xFFDCEAE3)
 )
 
 @Composable
 fun ZwiedzakTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
-    }
+    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
 
     MaterialTheme(
         colorScheme = colorScheme,

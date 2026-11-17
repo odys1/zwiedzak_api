@@ -175,6 +175,12 @@ class AuthViewModel : ViewModel() {
         _authState.value = AuthState.Unauthenticated()
     }
 
+    fun onSessionExpired(context: Context) {
+        if (AuthTokenManager.getInstance(context).sessionExpired.value) {
+            _authState.value = AuthState.Unauthenticated()
+        }
+    }
+
     fun clearError() {
         if (_authState.value is AuthState.Unauthenticated) {
             _authState.value = AuthState.Unauthenticated(null)

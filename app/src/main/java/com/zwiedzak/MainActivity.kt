@@ -16,6 +16,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import com.zwiedzak.data.auth.AuthTokenManager
 import com.zwiedzak.data.network.RetrofitInstance
 import com.zwiedzak.data.model.Place
 import com.zwiedzak.data.preferences.MapPreferences
@@ -70,10 +74,34 @@ fun ZwiedzakApp(
     var mapCenterLatitude by rememberSaveable { mutableStateOf(52.23) }
     var mapCenterLongitude by rememberSaveable { mutableStateOf(21.01) }
     var hasSelectedMapCenter by rememberSaveable { mutableStateOf(false) }
+    var mapUserLatitude by rememberSaveable { mutableStateOf<Double?>(null) }
+    var mapUserLongitude by rememberSaveable { mutableStateOf<Double?>(null) }
     val selectedPlace by viewModel.selectedPlace.collectAsState()
     val uiState by viewModel.uiState.collectAsState()
     val mapUiState by viewModel.mapUiState.collectAsState()
     val authState by authViewModel.authState.collectAsState()
+    val tokenManager = remember(context) { AuthTokenManager.getInstance(context) }
+    val sessionExpired by tokenManager.sessionExpired.collectAsState()
+
+    LaunchedEffect(Unit) {
+        authViewModel.checkAuthStatus(context)
+    }
+    LaunchedEffect(sessionExpired) {
+        if (sessionExpired) authViewModel.onSessionExpired(context)
+    }
+
+    if (sessionExpired) {
+        AlertDialog(
+            onDismissRequest = tokenManager::acknowledgeExpiration,
+            title = { Text("Sesja zakończona") },
+            text = { Text("Token wygasł lub jest nieprawidłowy. Zostałeś automatycznie wylogowany. Zaloguj się ponownie.") },
+            confirmButton = {
+                TextButton(onClick = tokenManager::acknowledgeExpiration) {
+                    Text("OK")
+                }
+            }
+        )
+    }
 
     LaunchedEffect(uiState) {
         val success = uiState as? NearbyUiState.Success
@@ -126,13 +154,17 @@ fun ZwiedzakApp(
         showMap -> {
             val success = uiState as? NearbyUiState.Success
             val mapSuccess = mapUiState as? NearbyUiState.Success
-            val displayedPlaces = mapSuccess ?: success
+            val mapError = mapUiState as? NearbyUiState.Error
+            val displayedPlaces = if (mapError != null) null else mapSuccess ?: success
             MapPlacesScreen(
                 places = searchMapPlaces ?: displayedPlaces?.places.orEmpty(),
                 isMockData = displayedPlaces?.isMockData == true,
+                apiErrorMessage = if (searchMapPlaces != null) null else mapError?.message ?: displayedPlaces?.apiErrorMessage,
                 showSearchResults = searchMapPlaces != null,
                 centerLatitude = mapCenterLatitude,
                 centerLongitude = mapCenterLongitude,
+                userLatitude = mapUserLatitude ?: success?.userLat,
+                userLongitude = mapUserLongitude ?: success?.userLng,
                 radiusKm = radiusKm,
                 onRadiusChange = { newRadiusKm ->
                     radiusKm = newRadiusKm
@@ -147,6 +179,10 @@ fun ZwiedzakApp(
                     hasSelectedMapCenter = true
                     mapCenterLatitude = latitude
                     mapCenterLongitude = longitude
+                },
+                onUserLocationChange = { latitude, longitude ->
+                    mapUserLatitude = latitude
+                    mapUserLongitude = longitude
                 },
                 onPlaceClick = viewModel::selectPlace,
                 onBackClick = {

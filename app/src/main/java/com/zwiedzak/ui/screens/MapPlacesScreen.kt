@@ -1,11 +1,16 @@
 package com.zwiedzak.ui.screens
 
+import android.Manifest
 import android.graphics.drawable.GradientDrawable
+import android.hardware.GeomagneticField
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -13,6 +18,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -20,6 +27,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,6 +44,10 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.zwiedzak.data.model.Place
 import com.zwiedzak.data.model.VisitStatus
 import com.zwiedzak.data.preferences.MapPreferences
+import com.zwiedzak.location.LocationTracker
+import com.zwiedzak.location.readDeviceHeading
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import org.osmdroid.config.Configuration
 import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
@@ -56,12 +68,16 @@ import kotlin.math.sqrt
 fun MapPlacesScreen(
     places: List<Place>,
     isMockData: Boolean,
+    apiErrorMessage: String?,
     centerLatitude: Double,
     centerLongitude: Double,
+    userLatitude: Double?,
+    userLongitude: Double?,
     radiusKm: Int,
     showSearchResults: Boolean,
     onRadiusChange: (Int) -> Unit,
     onCenterChange: (Double, Double) -> Unit,
+    onUserLocationChange: (Double, Double) -> Unit,
     onPlaceClick: (Place) -> Unit,
     onBackClick: () -> Unit
 ) {
@@ -74,11 +90,59 @@ fun MapPlacesScreen(
     val lastFittedRadiusKm = remember { mutableStateOf(radiusKm) }
     val lastSearchResultsKey = remember { mutableStateOf("") }
     val latestCenterChange by rememberUpdatedState(onCenterChange)
+    val latestUserLocationChange by rememberUpdatedState(onUserLocationChange)
     val latestPlaceClick by rememberUpdatedState(onPlaceClick)
     val latestCenterLatitude by rememberUpdatedState(centerLatitude)
     val latestCenterLongitude by rememberUpdatedState(centerLongitude)
     val latestRadiusKm by rememberUpdatedState(radiusKm)
     var showDiameterMenu by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val locationTracker = remember(context) { LocationTracker(context.applicationContext) }
+    var refreshRequest by remember { mutableStateOf(0) }
+    var localUserPosition by remember { mutableStateOf<GeoPoint?>(null) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        refreshRequest++
+    }
+
+    LaunchedEffect(mapViewState.value, refreshRequest) {
+        val map = mapViewState.value ?: return@LaunchedEffect
+        val (location, heading) = coroutineScope {
+            val locationResult = async {
+                if (locationTracker.hasLocationPermission()) locationTracker.getFreshLocation() else null
+            }
+            val headingResult = async { readDeviceHeading(context) }
+            locationResult.await() to headingResult.await()
+        }
+        val errors = mutableListOf<String>()
+        if (location != null) {
+            val point = GeoPoint(location.latitude, location.longitude)
+            localUserPosition = point
+            latestUserLocationChange(location.latitude, location.longitude)
+            if (!showSearchResults) latestCenterChange(location.latitude, location.longitude)
+            map.controller.setCenter(point)
+        } else {
+            errors.add(
+                if (locationTracker.hasLocationPermission()) {
+                    "Nie udało się ustalić aktualnej lokalizacji."
+                } else {
+                    "Brak uprawnienia do lokalizacji. Naciśnij kompas, aby je przyznać."
+                }
+            )
+        }
+        if (heading != null) {
+            val declination = location?.let {
+                GeomagneticField(
+                    it.latitude.toFloat(), it.longitude.toFloat(), it.altitude.toFloat(), System.currentTimeMillis()
+                ).declination
+            } ?: 0f
+            map.mapOrientation = -(heading + declination)
+        } else {
+            errors.add("Kompas urządzenia jest niedostępny.")
+        }
+        if (errors.isNotEmpty()) snackbarHostState.showSnackbar(errors.joinToString(" "))
+    }
     val visiblePlaces = remember(places, centerLatitude, centerLongitude, radiusKm, showSearchResults) {
         if (showSearchResults) {
             places
@@ -117,6 +181,7 @@ fun MapPlacesScreen(
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
@@ -131,6 +196,17 @@ fun MapPlacesScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = {
+                        if (locationTracker.hasLocationPermission()) {
+                            refreshRequest++
+                        } else {
+                            permissionLauncher.launch(
+                                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+                            )
+                        }
+                    }) {
+                        Icon(Icons.Default.Explore, contentDescription = "Ustaw mapę według mojej pozycji i kierunku")
+                    }
                     if (!showSearchResults) {
                         Box {
                             TextButton(onClick = { showDiameterMenu = true }) {
@@ -273,6 +349,21 @@ fun MapPlacesScreen(
                         }
                         mapView.overlays.add(marker)
                     }
+                    val userPosition = localUserPosition ?: if (userLatitude != null && userLongitude != null) {
+                        GeoPoint(userLatitude, userLongitude)
+                    } else {
+                        null
+                    }
+                    if (userPosition != null) {
+                        mapView.overlays.add(
+                            Marker(mapView).apply {
+                                position = userPosition
+                                title = "Twoja pozycja"
+                                icon = userLocationMarkerDrawable(context)
+                                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                            }
+                        )
+                    }
                     mapView.invalidate()
                 }
             )
@@ -288,6 +379,7 @@ fun MapPlacesScreen(
                 Text(
                     text = buildString {
                         if (isMockData) append("Dane demonstracyjne · ")
+                        apiErrorMessage?.let { append("Błąd API: $it · ") }
                         if (showSearchResults) {
                             append("${visiblePlaces.size} wyników wyszukiwania")
                         } else {
@@ -371,6 +463,16 @@ private fun statusMarkerDrawable(
         setColor(markerColor)
         setStroke((2 * context.resources.displayMetrics.density).toInt(), android.graphics.Color.WHITE)
         setSize(diameter, diameter)
+    }
+}
+
+private fun userLocationMarkerDrawable(context: android.content.Context): GradientDrawable {
+    val density = context.resources.displayMetrics.density
+    return GradientDrawable().apply {
+        shape = GradientDrawable.OVAL
+        setColor(android.graphics.Color.rgb(25, 118, 210))
+        setStroke((3 * density).toInt(), android.graphics.Color.WHITE)
+        setSize((22 * density).toInt(), (22 * density).toInt())
     }
 }
 

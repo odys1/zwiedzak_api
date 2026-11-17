@@ -4,6 +4,9 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -12,8 +15,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AddAPhoto
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -22,21 +28,24 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
 import com.zwiedzak.data.model.Place
 import com.zwiedzak.data.model.VisitStatus
 import com.zwiedzak.ui.PlaceActionState
 import com.zwiedzak.ui.PlaceDetailsState
 import com.zwiedzak.ui.PlaceActionsViewModel
+import java.io.File
+import java.io.IOException
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -51,22 +60,65 @@ fun PlaceDetailScreen(
     val context = LocalContext.current
     val actionState by placeActionsViewModel.state.collectAsState()
     val detailsState by placeActionsViewModel.detailsState.collectAsState()
+    val categoriesState by placeActionsViewModel.categoriesState.collectAsState()
+    val historyState by placeActionsViewModel.historyState.collectAsState()
+    var activePlaceId by remember(place.id) { mutableStateOf(place.id) }
     val displayedPlace = (detailsState as? PlaceDetailsState.Success)?.place
-        ?.takeIf { it.id == place.id } ?: place
+        ?.takeIf { it.id == activePlaceId } ?: place
+    val detailsLoaded = (detailsState as? PlaceDetailsState.Success)?.place?.id == activePlaceId
     var visitStatus by remember(place.id) { mutableStateOf(place.visitState) }
     var pendingVisitStatus by remember(place.id) { mutableStateOf<VisitStatus?>(null) }
     var showImageDialog by remember { mutableStateOf(false) }
     var imageUrl by remember { mutableStateOf("") }
     var imageCaption by remember { mutableStateOf("") }
     var selectedRating by remember { mutableStateOf(0) }
+    var pendingCameraPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var showEditForm by remember(place.id) { mutableStateOf(true) }
 
-    LaunchedEffect(place.id) {
+    val galleryPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            placeActionsViewModel.clearState()
+            placeActionsViewModel.uploadImage(context, displayedPlace.id, uri, imageCaption)
+        }
+    }
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { captured ->
+        val cameraPath = pendingCameraPath
+        if (captured && cameraPath != null) {
+            placeActionsViewModel.clearState()
+            val cameraUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                File(cameraPath)
+            )
+            placeActionsViewModel.uploadImage(
+                context,
+                displayedPlace.id,
+                cameraUri,
+                imageCaption
+            )
+        } else {
+            cameraPath?.let { File(it).delete() }
+            pendingCameraPath = null
+        }
+    }
+
+    LaunchedEffect(activePlaceId) {
         placeActionsViewModel.clearState()
-        placeActionsViewModel.loadPlaceDetails(place.id)
+        placeActionsViewModel.loadPlaceDetails(activePlaceId)
+        placeActionsViewModel.loadCategories()
+    }
+
+    LaunchedEffect(activePlaceId, isAuthenticated) {
+        if (isAuthenticated) placeActionsViewModel.loadVisitHistory(activePlaceId)
     }
 
     LaunchedEffect(actionState) {
-        if (actionState is PlaceActionState.Success) {
+        val success = actionState as? PlaceActionState.Success
+        if (success != null) {
             pendingVisitStatus?.let { visitStatus = it }
             pendingVisitStatus = null
             if (showImageDialog) {
@@ -74,9 +126,26 @@ fun PlaceDetailScreen(
                 imageUrl = ""
                 imageCaption = ""
             }
-            placeActionsViewModel.loadPlaceDetails(place.id)
-        } else if (actionState is PlaceActionState.Error) {
+            if (showEditForm) showEditForm = false
+            val resultId = success.placeId ?: activePlaceId
+            if (resultId != activePlaceId) {
+                Toast.makeText(context, success.message, Toast.LENGTH_LONG).show()
+                activePlaceId = resultId
+            } else {
+                placeActionsViewModel.loadPlaceDetails(resultId)
+                if (isAuthenticated) placeActionsViewModel.loadVisitHistory(resultId)
+            }
+        } else if (actionState is PlaceActionState.Error ||
+            actionState is PlaceActionState.VisitUncertain
+        ) {
             pendingVisitStatus = null
+        }
+        if (actionState !is PlaceActionState.Loading &&
+            actionState !is PlaceActionState.Idle &&
+            pendingCameraPath != null
+        ) {
+            pendingCameraPath?.let { File(it).delete() }
+            pendingCameraPath = null
         }
     }
 
@@ -94,6 +163,13 @@ fun PlaceDetailScreen(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Powrót"
                         )
+                    }
+                },
+                actions = {
+                    if (detailsLoaded) {
+                        TextButton(onClick = { placeActionsViewModel.clearState(); showEditForm = true }) {
+                            Text("Formularz")
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -179,13 +255,13 @@ fun PlaceDetailScreen(
                                 Icon(
                                     imageVector = Icons.Default.Star,
                                     contentDescription = "Ocena",
-                                    tint = Color.White,
+                                    tint = MaterialTheme.colorScheme.onPrimary,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
                                     text = String.format(Locale.getDefault(), "%.1f", rating),
-                                    color = Color.White,
+                                    color = MaterialTheme.colorScheme.onPrimary,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 14.sp
                                 )
@@ -241,21 +317,53 @@ fun PlaceDetailScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text("Status wizyty", style = MaterialTheme.typography.titleMedium)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = visitStatus.isVisited,
+                            onCheckedChange = { checked ->
+                                placeActionsViewModel.clearState()
+                                val status = if (checked) VisitStatus.VISITED else VisitStatus.PLANNED
+                                pendingVisitStatus = status
+                                placeActionsViewModel.updateVisitStatus(displayedPlace.id, status.apiValue)
+                            },
+                            enabled = isAuthenticated && actionState !is PlaceActionState.Loading &&
+                                detailsLoaded
+                        )
+                        Text("Oznacz jako odwiedzone")
+                    }
                     if (isAuthenticated) {
-                        VisitStatus.entries.forEach { status ->
-                            FilterChip(
-                                selected = visitStatus == status,
+                        if (visitStatus.isVisited) {
+                            TextButton(
                                 onClick = {
-                                    if (visitStatus != status && actionState !is PlaceActionState.Loading) {
-                                        placeActionsViewModel.clearState()
-                                        pendingVisitStatus = status
-                                        placeActionsViewModel.updateVisitStatus(displayedPlace.id, status.apiValue)
-                                    }
+                                    placeActionsViewModel.clearState()
+                                    pendingVisitStatus = VisitStatus.VISITED
+                                    placeActionsViewModel.updateVisitStatus(
+                                        displayedPlace.id,
+                                        VisitStatus.VISITED.apiValue
+                                    )
                                 },
-                                enabled = actionState !is PlaceActionState.Loading,
-                                label = { Text(status.label) }
-                            )
+                                enabled = actionState !is PlaceActionState.Loading &&
+                                    detailsLoaded
+                            ) {
+                                Text("Zapisz kolejną wizytę")
+                            }
                         }
+                        FilterChip(
+                            selected = visitStatus == VisitStatus.AVOID,
+                            onClick = {
+                                if (visitStatus != VisitStatus.AVOID) {
+                                    placeActionsViewModel.clearState()
+                                    pendingVisitStatus = VisitStatus.AVOID
+                                    placeActionsViewModel.updateVisitStatus(
+                                        displayedPlace.id,
+                                        VisitStatus.AVOID.apiValue
+                                    )
+                                }
+                            },
+                            enabled = actionState !is PlaceActionState.Loading &&
+                                detailsLoaded,
+                            label = { Text("Odwiedzone · nie wracam") }
+                        )
                     } else {
                         Button(onClick = onAuthClick) {
                             Text("Zaloguj się, aby zapisać status")
@@ -297,14 +405,17 @@ fun PlaceDetailScreen(
                         ) {
                             Text("Zapisz ocenę")
                         }
-                        OutlinedButton(
+                        IconButton(
                             onClick = {
                                 placeActionsViewModel.clearState()
                                 showImageDialog = true
                             },
                             enabled = actionState !is PlaceActionState.Loading
                         ) {
-                            Text("Dodaj zdjęcie przez adres HTTPS")
+                            Icon(
+                                imageVector = Icons.Default.AddAPhoto,
+                                contentDescription = "Dodaj zdjęcie"
+                            )
                         }
                     }
 
@@ -318,6 +429,9 @@ fun PlaceDetailScreen(
                             state.message,
                             color = MaterialTheme.colorScheme.error
                         )
+                        is PlaceActionState.VisitUncertain -> Unit
+                        is PlaceActionState.EditConflict -> Unit
+                        is PlaceActionState.EditUncertain -> Unit
                         PlaceActionState.Idle -> Unit
                     }
                 }
@@ -446,6 +560,56 @@ fun PlaceDetailScreen(
         }
     }
 
+    if (showEditForm && detailsLoaded) {
+        AddPlaceDialog(
+            initialLatitude = displayedPlace.latitude ?: 0.0,
+            initialLongitude = displayedPlace.longitude ?: 0.0,
+            actionState = actionState,
+            categoriesState = categoriesState,
+            editPlace = displayedPlace,
+            isAuthenticated = isAuthenticated,
+            historyState = historyState,
+            onDismiss = { showEditForm = false; placeActionsViewModel.clearState() },
+            onRetryCategories = placeActionsViewModel::loadCategories,
+            onRetryHistory = { placeActionsViewModel.loadVisitHistory(activePlaceId) },
+            onAuthClick = onAuthClick,
+            onSubmit = { request, imageUri, caption, applyToShared ->
+                placeActionsViewModel.editPlace(context, displayedPlace, request, imageUri, caption, applyToShared)
+            }
+        )
+    }
+
+    val uncertainVisit = actionState as? PlaceActionState.VisitUncertain
+    if (uncertainVisit != null) {
+        AlertDialog(
+            onDismissRequest = placeActionsViewModel::clearState,
+            title = { Text("Nieznany wynik zapisu wizyty") },
+            text = {
+                Text(
+                    (if (uncertainVisit.status == VisitStatus.PLANNED.apiValue) {
+                        "Serwer mógł zapisać zmianę statusu.\n\n"
+                    } else {
+                        "Serwer mógł zapisać wizytę. Ponowienie może dopisać ją drugi raz.\n\n"
+                    }) +
+                        uncertainVisit.historyMessage
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingVisitStatus = VisitStatus.fromApiValue(uncertainVisit.status)
+                    placeActionsViewModel.updateVisitStatus(uncertainVisit.placeId, uncertainVisit.status)
+                }) {
+                    Text("Zapisz ponownie")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = placeActionsViewModel::clearState) {
+                    Text("Nie ponawiaj")
+                }
+            }
+        )
+    }
+
     if (showImageDialog) {
         AlertDialog(
             onDismissRequest = {
@@ -455,6 +619,68 @@ fun PlaceDetailScreen(
             title = { Text("Dodaj zdjęcie") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        IconButton(
+                            onClick = {
+                                galleryPicker.launch(
+                                    PickVisualMediaRequest(
+                                        ActivityResultContracts.PickVisualMedia.ImageOnly
+                                    )
+                                )
+                            },
+                            enabled = actionState !is PlaceActionState.Loading
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PhotoLibrary,
+                                contentDescription = "Wybierz zdjęcie z galerii"
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                var cameraFile: File? = null
+                                try {
+                                    cameraFile = File.createTempFile(
+                                        "zwiedzak-camera-",
+                                        ".jpg",
+                                        context.cacheDir
+                                    )
+                                    val cameraUri = FileProvider.getUriForFile(
+                                        context,
+                                        "${context.packageName}.fileprovider",
+                                        cameraFile
+                                    )
+                                    pendingCameraPath = cameraFile.absolutePath
+                                    cameraLauncher.launch(cameraUri)
+                                } catch (e: IOException) {
+                                    cameraFile?.delete()
+                                    pendingCameraPath = null
+                                    Toast.makeText(
+                                        context,
+                                        "Nie udało się przygotować zdjęcia z aparatu.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                } catch (e: ActivityNotFoundException) {
+                                    cameraFile?.delete()
+                                    pendingCameraPath = null
+                                    Toast.makeText(
+                                        context,
+                                        "Nie znaleziono aplikacji aparatu.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            },
+                            enabled = actionState !is PlaceActionState.Loading
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CameraAlt,
+                                contentDescription = "Zrób zdjęcie aparatem"
+                            )
+                        }
+                    }
+                    Text("Lub dodaj zdjęcie przez adres HTTPS")
                     OutlinedTextField(
                         value = imageUrl,
                         onValueChange = { imageUrl = it },
@@ -478,7 +704,7 @@ fun PlaceDetailScreen(
                 }
             },
             confirmButton = {
-                Button(
+                IconButton(
                     enabled = imageUrl.trim().startsWith("https://", ignoreCase = true) &&
                         actionState !is PlaceActionState.Loading,
                     onClick = {
@@ -490,7 +716,10 @@ fun PlaceDetailScreen(
                         )
                     }
                 ) {
-                    Text("Dodaj")
+                    Icon(
+                        imageVector = Icons.Default.AddAPhoto,
+                        contentDescription = "Dodaj zdjęcie z adresu"
+                    )
                 }
             },
             dismissButton = {

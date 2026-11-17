@@ -10,6 +10,18 @@ class PlaceActionModelsTest {
     private val gson = Gson()
 
     @Test
+    fun categoriesResponseReadsDisplayNameAndStableCode() {
+        val response = gson.fromJson(
+            """{"items":[{"code":"inne","name":"Inne"}]}""",
+            CategoriesResponse::class.java
+        )
+
+        assertEquals(1, response.items.size)
+        assertEquals("inne", response.items.single().code)
+        assertEquals("Inne", response.items.single().name)
+    }
+
+    @Test
     fun createPlaceRequestUsesDocumentedJsonFieldNames() {
         val request = CreatePlaceRequest(
             name = "Zamek",
@@ -21,7 +33,8 @@ class PlaceActionModelsTest {
             hasAccommodation = false,
             hasFood = true,
             visibility = "public",
-            confirmDistinct = true
+            confirmDistinct = true,
+            visited = false
         )
 
         val json = gson.toJsonTree(request).asJsonObject
@@ -33,6 +46,8 @@ class PlaceActionModelsTest {
         assertTrue(json.get("hasFood").asBoolean)
         assertEquals("public", json.get("visibility").asString)
         assertTrue(json.get("confirmDistinct").asBoolean)
+        assertFalse(json.get("visited").asBoolean)
+        assertTrue(gson.toJsonTree(request.copy(visited = true)).asJsonObject.get("visited").asBoolean)
     }
 
     @Test
@@ -51,5 +66,16 @@ class PlaceActionModelsTest {
             5,
             gson.toJsonTree(SubmitRatingRequest(5)).asJsonObject.get("score").asInt
         )
+    }
+
+    @Test
+    fun parsesVisitHistoryResponse() {
+        val history = gson.fromJson(
+            """{"items":[{"id":"v1","visitedAt":"2026-11-16T14:30:25.123456Z"}],"limit":50,"offset":0,"hasMore":false}""",
+            PlaceVisitsResponse::class.java
+        )
+        assertEquals("v1", history.items.single().id)
+        assertEquals("2026-11-16T14:30:25.123456Z", history.items.single().visitedAt)
+        assertFalse(history.hasMore)
     }
 }

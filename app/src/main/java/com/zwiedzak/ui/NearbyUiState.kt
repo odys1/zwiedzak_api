@@ -10,7 +10,8 @@ sealed interface NearbyUiState {
         val places: List<Place>,
         val userLat: Double,
         val userLng: Double,
-        val isMockData: Boolean = false
+        val isMockData: Boolean = false,
+        val apiErrorMessage: String? = null
     ) : NearbyUiState
     data class Error(val message: String) : NearbyUiState
 }
