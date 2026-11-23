@@ -5,13 +5,21 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Location
+import android.os.Looper
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.CurrentLocationRequest
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlin.coroutines.resume
 
 class LocationTracker(private val context: Context) {
@@ -39,8 +47,13 @@ class LocationTracker(private val context: Context) {
             suspendCancellableCoroutine { continuation ->
                 val token = CancellationTokenSource()
                 continuation.invokeOnCancellation { token.cancel() }
+                val request = CurrentLocationRequest.Builder()
+                    .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
+                    .setMaxUpdateAgeMillis(0)
+                    .setDurationMillis(15_000)
+                    .build()
                 fusedLocationClient.getCurrentLocation(
-                    Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+                    request,
                     token.token
                 ).addOnSuccessListener { location ->
                     if (continuation.isActive) continuation.resume(location)
@@ -49,6 +62,30 @@ class LocationTracker(private val context: Context) {
                 }
             }
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun observeLocation(): Flow<Location> = callbackFlow {
+        if (!hasLocationPermission()) {
+            close(SecurityException("Brak uprawnienia do lokalizacji."))
+            return@callbackFlow
+        }
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2_000)
+            .setMinUpdateIntervalMillis(1_000)
+            .setMaxUpdateAgeMillis(0)
+            .build()
+        val callback = object : LocationCallback() {
+            override fun onLocationResult(result: LocationResult) {
+                result.locations.forEach { trySend(it) }
+            }
+        }
+        try {
+            fusedLocationClient.requestLocationUpdates(request, callback, Looper.getMainLooper())
+                .addOnFailureListener { close(it) }
+        } catch (error: SecurityException) {
+            close(error)
+        }
+        awaitClose { fusedLocationClient.removeLocationUpdates(callback) }
     }
 
     @SuppressLint("MissingPermission")

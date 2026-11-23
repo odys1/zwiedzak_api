@@ -9,7 +9,6 @@ import com.zwiedzak.data.model.RegisterRequest
 import com.zwiedzak.data.model.RegistrationResponse
 import com.zwiedzak.data.model.ResendRegistrationRequest
 import com.zwiedzak.data.model.VerifyRegistrationRequest
-import com.zwiedzak.data.model.AddPlaceImageRequest
 import com.zwiedzak.data.model.CategoriesResponse
 import com.zwiedzak.data.model.CreatePlaceRequest
 import com.zwiedzak.data.model.SubmitRatingRequest
@@ -99,12 +98,6 @@ interface ApiService {
         @Query("limit") limit: Int = 5,
         @Query("offset") offset: Int = 0
     ): PlaceVisitsResponse
-
-    @POST("api/v1/places/{id}/images")
-    suspend fun addPlaceImage(
-        @Path("id") id: String,
-        @Body request: AddPlaceImageRequest
-    ): Response<Unit>
 
     @Multipart
     @POST("api/v1/places/{id}/images")

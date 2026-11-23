@@ -20,6 +20,7 @@ class NearbyPlacesViewModel : ViewModel() {
 
     private var mapFetchJob: Job? = null
     private var searchJob: Job? = null
+    private var nearbyFetchJob: Job? = null
 
     private val _uiState = MutableStateFlow<NearbyUiState>(NearbyUiState.Idle)
     val uiState: StateFlow<NearbyUiState> = _uiState.asStateFlow()
@@ -85,11 +86,21 @@ class NearbyPlacesViewModel : ViewModel() {
         _searchUiState.value = NearbyUiState.Idle
     }
 
+    fun clearSessionPlaces() {
+        nearbyFetchJob?.cancel()
+        mapFetchJob?.cancel()
+        searchJob?.cancel()
+        _uiState.value = NearbyUiState.Idle
+        _searchUiState.value = NearbyUiState.Idle
+        _mapUiState.value = NearbyUiState.Idle
+    }
+
     fun onPermissionGranted(context: Context, radiusMeters: Int = 10000) {
         fetchLocationAndPlaces(context, radiusMeters)
     }
 
     fun fetchLocationAndPlaces(context: Context, radiusMeters: Int = 10000) {
+        nearbyFetchJob?.cancel()
         val locationTracker = LocationTracker(context)
 
         if (!locationTracker.hasLocationPermission()) {
@@ -97,7 +108,7 @@ class NearbyPlacesViewModel : ViewModel() {
             return
         }
 
-        viewModelScope.launch {
+        nearbyFetchJob = viewModelScope.launch {
             _uiState.value = NearbyUiState.Loading
             val location = locationTracker.getCurrentLocation()
 
@@ -151,7 +162,8 @@ class NearbyPlacesViewModel : ViewModel() {
     }
 
     fun retryApiFetch(lat: Double, lng: Double, radiusMeters: Int = 10000) {
-        viewModelScope.launch {
+        nearbyFetchJob?.cancel()
+        nearbyFetchJob = viewModelScope.launch {
             _uiState.value = NearbyUiState.Loading
             _uiState.value = loadPlacesFromApi(lat, lng, radiusMeters)
         }

@@ -33,7 +33,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
 import com.zwiedzak.data.model.Place
 import com.zwiedzak.data.model.VisitStatus
 import com.zwiedzak.data.network.RetrofitInstance
@@ -76,6 +75,7 @@ fun NearbyPlacesScreen(
     var showServerDialog by remember { mutableStateOf(false) }
     var showProfileDialog by remember { mutableStateOf(false) }
     var showAddPlaceDialog by remember { mutableStateOf(false) }
+    var creationWarning by rememberSaveable { mutableStateOf<String?>(null) }
     var nameQuery by rememberSaveable { mutableStateOf("") }
     var addressQuery by rememberSaveable { mutableStateOf("") }
     var visitFilter by rememberSaveable { mutableStateOf(VisitFilter.ALL) }
@@ -123,27 +123,37 @@ fun NearbyPlacesScreen(
     LaunchedEffect(Unit) {
         viewModel.fetchLocationAndPlaces(context, radiusKm * 1000)
         authViewModel.checkAuthStatus(context)
+        if (isSearchActive) {
+            viewModel.searchPlaces(
+                context, appliedNameQuery, appliedAddressQuery, appliedVisitedQuery,
+                radiusKm * 1000, appliedFilterMine && isAuthenticated
+            )
+        }
     }
 
     LaunchedEffect(authState) {
         if (authState is AuthState.Unauthenticated) {
             filterMine = false
             visitFilter = VisitFilter.ALL
-            if (appliedFilterMine || appliedVisitFilter != VisitFilter.ALL) {
-                appliedFilterMine = false
-                appliedVisitFilter = VisitFilter.ALL
-                hasAppliedSearch = false
-                viewModel.clearSearch()
-                viewModel.fetchLocationAndPlaces(context, radiusKm * 1000)
-            }
+            appliedFilterMine = false
+            appliedVisitFilter = VisitFilter.ALL
+            hasAppliedSearch = false
+            viewModel.clearSessionPlaces()
+            viewModel.fetchLocationAndPlaces(context, radiusKm * 1000)
         }
     }
 
     LaunchedEffect(placeActionState, showAddPlaceDialog) {
-        if (showAddPlaceDialog && placeActionState is PlaceActionState.Success) {
+        if (showAddPlaceDialog &&
+            (placeActionState is PlaceActionState.Success || placeActionState is PlaceActionState.CreatedWithWarning)
+        ) {
+            creationWarning = (placeActionState as? PlaceActionState.CreatedWithWarning)?.message
             showAddPlaceDialog = false
             placeActionsViewModel.clearState()
             viewModel.fetchLocationAndPlaces(context, radiusKm * 1000)
+            if (isSearchActive) {
+                viewModel.searchPlaces(context, appliedNameQuery, appliedAddressQuery, appliedVisitedQuery, radiusKm * 1000, appliedFilterMine)
+            }
         }
     }
 
@@ -691,8 +701,19 @@ fun NearbyPlacesScreen(
                 placeActionsViewModel.clearState()
             },
             onRetryCategories = placeActionsViewModel::loadCategories,
-            onSubmit = { request, imageUri, caption, _ ->
+            onSubmit = { request, imageUri, caption ->
                 placeActionsViewModel.createPlace(context, request, imageUri, caption)
+            }
+        )
+    }
+
+    creationWarning?.let { warning ->
+        AlertDialog(
+            onDismissRequest = { creationWarning = null },
+            title = { Text("Miejsce zostało dodane") },
+            text = { Text(warning) },
+            confirmButton = {
+                TextButton(onClick = { creationWarning = null }) { Text("Rozumiem") }
             }
         )
     }
@@ -718,16 +739,7 @@ fun PlaceCard(
                 .fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            val imageUrl = place.imageUrl
-                ?.trim()
-                ?.takeIf { it.isNotEmpty() }
-                ?.let { url ->
-                    if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("content://")) {
-                        url
-                    } else {
-                        "${RetrofitInstance.getBaseUrl().trimEnd('/')}/${url.trimStart('/')}"
-                    }
-                }
+            val imageUrl = place.imageUrl?.trim()?.takeIf { it.isNotEmpty() }
 
             Box(
                 modifier = Modifier
@@ -736,9 +748,9 @@ fun PlaceCard(
                     .background(MaterialTheme.colorScheme.surfaceVariant)
             ) {
                 if (imageUrl != null) {
-                    AsyncImage(
-                        model = imageUrl,
-                        contentDescription = "Zdjęcie: ${place.name}",
+                    PlaceRemoteImage(
+                        url = imageUrl,
+                        description = "Zdjęcie: ${place.name}",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )

@@ -15,6 +15,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
@@ -81,6 +82,7 @@ fun ZwiedzakApp(
     val mapUiState by viewModel.mapUiState.collectAsState()
     val authState by authViewModel.authState.collectAsState()
     val tokenManager = remember(context) { AuthTokenManager.getInstance(context) }
+    val screenStateHolder = rememberSaveableStateHolder()
     val sessionExpired by tokenManager.sessionExpired.collectAsState()
 
     LaunchedEffect(Unit) {
@@ -88,6 +90,16 @@ fun ZwiedzakApp(
     }
     LaunchedEffect(sessionExpired) {
         if (sessionExpired) authViewModel.onSessionExpired(context)
+    }
+    LaunchedEffect(authState) {
+        if (authState is AuthState.Unauthenticated) {
+            if (selectedPlace != null) viewModel.selectPlace(null)
+            searchMapPlaces = null
+            if (showMap) {
+                viewModel.clearSessionPlaces()
+                viewModel.fetchMapPlaces(mapCenterLatitude, mapCenterLongitude, radiusKm * 1000)
+            }
+        }
     }
 
     if (sessionExpired) {
@@ -191,25 +203,27 @@ fun ZwiedzakApp(
                 }
             )
         }
-        else -> NearbyPlacesScreen(
-            viewModel = viewModel,
-            authViewModel = authViewModel,
-            placeActionsViewModel = placeActionsViewModel,
-            radiusKm = radiusKm,
-            onRadiusChange = { newRadiusKm ->
-                radiusKm = newRadiusKm
-                MapPreferences.setRadiusKm(context, newRadiusKm)
-            },
-            onPlaceClick = viewModel::selectPlace,
-            onAuthClick = { showAuth = true },
-            onMapClick = {
-                searchMapPlaces = null
-                showMap = true
-            },
-            onShowSearchResultsMap = { places ->
-                searchMapPlaces = places
-                showMap = true
-            }
-        )
+        else -> screenStateHolder.SaveableStateProvider("nearby") {
+            NearbyPlacesScreen(
+                viewModel = viewModel,
+                authViewModel = authViewModel,
+                placeActionsViewModel = placeActionsViewModel,
+                radiusKm = radiusKm,
+                onRadiusChange = { newRadiusKm ->
+                    radiusKm = newRadiusKm
+                    MapPreferences.setRadiusKm(context, newRadiusKm)
+                },
+                onPlaceClick = viewModel::selectPlace,
+                onAuthClick = { showAuth = true },
+                onMapClick = {
+                    searchMapPlaces = null
+                    showMap = true
+                },
+                onShowSearchResultsMap = { places ->
+                    searchMapPlaces = places
+                    showMap = true
+                }
+            )
+        }
     }
 }

@@ -36,7 +36,11 @@ data class CreatePlaceRequest(
     @SerializedName("confirmDistinct")
     val confirmDistinct: Boolean,
     @SerializedName("visited")
-    val visited: Boolean
+    val visited: Boolean,
+    @Transient
+    val editVisitStatus: VisitStatus? = null,
+    @SerializedName("visitStatus")
+    val createVisitStatus: String? = null
 )
 
 data class UpdateVisitStatusRequest(
@@ -60,13 +64,6 @@ data class PlaceVisitsResponse(
     val offset: Int,
     @SerializedName("hasMore")
     val hasMore: Boolean
-)
-
-data class AddPlaceImageRequest(
-    @SerializedName("imageUrl")
-    val imageUrl: String,
-    @SerializedName("caption")
-    val caption: String?
 )
 
 data class SubmitRatingRequest(

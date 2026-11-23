@@ -3,6 +3,9 @@ package com.zwiedzak.ui.screens
 import android.Manifest
 import android.graphics.drawable.GradientDrawable
 import android.hardware.GeomagneticField
+import android.location.Location
+import android.view.MotionEvent
+import android.view.ViewConfiguration
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
@@ -30,24 +33,28 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.zwiedzak.data.model.Place
 import com.zwiedzak.data.model.VisitStatus
 import com.zwiedzak.data.preferences.MapPreferences
 import com.zwiedzak.location.LocationTracker
-import com.zwiedzak.location.readDeviceHeading
-import kotlinx.coroutines.async
+import com.zwiedzak.location.observeDeviceHeading
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
 import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
@@ -100,6 +107,14 @@ fun MapPlacesScreen(
     val locationTracker = remember(context) { LocationTracker(context.applicationContext) }
     var refreshRequest by remember { mutableStateOf(0) }
     var localUserPosition by remember { mutableStateOf<GeoPoint?>(null) }
+    val lastLocation = remember { mutableStateOf<Location?>(null) }
+    val following = remember { mutableStateOf(true) }
+    val compassRotation = remember { mutableFloatStateOf(0f) }
+    var mode by remember { mutableStateOf(MapOrientationMode.NORTH) }
+    var nextMode by remember { mutableStateOf(MapOrientationMode.NORTH) }
+    var isResumed by remember(lifecycleOwner) {
+        mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+    }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
@@ -108,22 +123,21 @@ fun MapPlacesScreen(
 
     LaunchedEffect(mapViewState.value, refreshRequest) {
         val map = mapViewState.value ?: return@LaunchedEffect
-        val (location, heading) = coroutineScope {
-            val locationResult = async {
-                if (locationTracker.hasLocationPermission()) locationTracker.getFreshLocation() else null
-            }
-            val headingResult = async { readDeviceHeading(context) }
-            locationResult.await() to headingResult.await()
+        val location = try {
+            if (locationTracker.hasLocationPermission()) locationTracker.getFreshLocation() else null
+        } catch (error: SecurityException) {
+            snackbarHostState.showSnackbar("Brak uprawnienia do lokalizacji. Włącz je w ustawieniach aplikacji.")
+            return@LaunchedEffect
         }
-        val errors = mutableListOf<String>()
         if (location != null) {
             val point = GeoPoint(location.latitude, location.longitude)
+            lastLocation.value = location
             localUserPosition = point
             latestUserLocationChange(location.latitude, location.longitude)
             if (!showSearchResults) latestCenterChange(location.latitude, location.longitude)
             map.controller.setCenter(point)
         } else {
-            errors.add(
+            snackbarHostState.showSnackbar(
                 if (locationTracker.hasLocationPermission()) {
                     "Nie udało się ustalić aktualnej lokalizacji."
                 } else {
@@ -131,17 +145,60 @@ fun MapPlacesScreen(
                 }
             )
         }
-        if (heading != null) {
-            val declination = location?.let {
-                GeomagneticField(
-                    it.latitude.toFloat(), it.longitude.toFloat(), it.altitude.toFloat(), System.currentTimeMillis()
-                ).declination
-            } ?: 0f
-            map.mapOrientation = -(heading + declination)
-        } else {
-            errors.add("Kompas urządzenia jest niedostępny.")
+    }
+    LaunchedEffect(mapViewState.value, mode, isResumed, refreshRequest) {
+        val map = mapViewState.value ?: return@LaunchedEffect
+        if (mode != MapOrientationMode.DIRECTION || !isResumed || !locationTracker.hasLocationPermission()) {
+            return@LaunchedEffect
         }
-        if (errors.isNotEmpty()) snackbarHostState.showSnackbar(errors.joinToString(" "))
+        coroutineScope {
+            var magneticHeading: Float? = null
+            fun updateOrientation() {
+                if (mode != MapOrientationMode.DIRECTION) return
+                val location = lastLocation.value
+                val declination = location?.let {
+                    GeomagneticField(
+                        it.latitude.toFloat(), it.longitude.toFloat(), it.altitude.toFloat(), System.currentTimeMillis()
+                    ).declination
+                } ?: 0f
+                val heading = directionHeading(
+                    location?.takeIf { it.hasBearing() }?.bearing,
+                    location?.takeIf { it.hasSpeed() }?.speed,
+                    magneticHeading,
+                    declination
+                ) ?: return
+                map.mapOrientation = -heading
+                compassRotation.floatValue = -heading
+            }
+            launch {
+                try {
+                    locationTracker.observeLocation().collect { location ->
+                        lastLocation.value = location
+                        val point = GeoPoint(location.latitude, location.longitude)
+                        localUserPosition = point
+                        latestUserLocationChange(location.latitude, location.longitude)
+                        if (following.value) map.controller.setCenter(point)
+                        updateOrientation()
+                    }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    snackbarHostState.showSnackbar("Nie udało się śledzić lokalizacji: ${error.localizedMessage ?: "błąd GPS"}.")
+                }
+            }
+            launch {
+                try {
+                    observeDeviceHeading(context).collect { heading ->
+                        magneticHeading = heading
+                        updateOrientation()
+                    }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    snackbarHostState.showSnackbar("Kompas niedostępny. Kierunek będzie dostępny podczas ruchu z GPS.")
+                }
+            }
+        }
     }
     val visiblePlaces = remember(places, centerLatitude, centerLongitude, radiusKm, showSearchResults) {
         if (showSearchResults) {
@@ -165,10 +222,12 @@ fun MapPlacesScreen(
     DisposableEffect(lifecycleOwner) {
         val observer = object : DefaultLifecycleObserver {
             override fun onResume(owner: LifecycleOwner) {
+                isResumed = true
                 mapViewState.value?.onResume()
             }
 
             override fun onPause(owner: LifecycleOwner) {
+                isResumed = false
                 mapViewState.value?.onPause()
             }
         }
@@ -197,6 +256,13 @@ fun MapPlacesScreen(
                 },
                 actions = {
                     IconButton(onClick = {
+                        mode = nextMode
+                        nextMode = nextMode.next()
+                        following.value = true
+                        if (mode == MapOrientationMode.NORTH) {
+                            mapViewState.value?.mapOrientation = 0f
+                            compassRotation.floatValue = 0f
+                        }
                         if (locationTracker.hasLocationPermission()) {
                             refreshRequest++
                         } else {
@@ -205,7 +271,20 @@ fun MapPlacesScreen(
                             )
                         }
                     }) {
-                        Icon(Icons.Default.Explore, contentDescription = "Ustaw mapę według mojej pozycji i kierunku")
+                        Icon(
+                            Icons.Default.Explore,
+                            contentDescription = if (nextMode == MapOrientationMode.NORTH) {
+                                "Wyśrodkuj i ustaw północ na górze"
+                            } else {
+                                "Wyśrodkuj i śledź kierunek ruchu"
+                            },
+                            modifier = Modifier.graphicsLayer { rotationZ = compassRotation.floatValue },
+                            tint = if (mode == MapOrientationMode.DIRECTION && following.value) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            }
+                        )
                     }
                     if (!showSearchResults) {
                         Box {
@@ -264,15 +343,35 @@ fun MapPlacesScreen(
                         setMultiTouchControls(true)
                         controller.setZoom(13.0)
                         controller.setCenter(GeoPoint(centerLatitude, centerLongitude))
+                        var touchX = 0f
+                        var touchY = 0f
+                        val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+                        setOnTouchListener { _, event ->
+                            when (event.actionMasked) {
+                                MotionEvent.ACTION_DOWN -> {
+                                    touchX = event.x
+                                    touchY = event.y
+                                }
+                                MotionEvent.ACTION_MOVE -> {
+                                    if (kotlin.math.abs(event.x - touchX) > touchSlop ||
+                                        kotlin.math.abs(event.y - touchY) > touchSlop) {
+                                        following.value = false
+                                    }
+                                }
+                            }
+                            false
+                        }
                         overlays.add(
                             MapEventsOverlay(
                                 object : MapEventsReceiver {
                                     override fun singleTapConfirmedHelper(point: GeoPoint): Boolean {
+                                        following.value = false
                                         latestCenterChange(point.latitude, point.longitude)
                                         return true
                                     }
 
                                     override fun longPressHelper(point: GeoPoint): Boolean {
+                                        following.value = false
                                         latestCenterChange(point.latitude, point.longitude)
                                         return true
                                     }

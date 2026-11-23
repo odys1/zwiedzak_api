@@ -48,20 +48,19 @@ class PlaceActionModelsTest {
         assertTrue(json.get("confirmDistinct").asBoolean)
         assertFalse(json.get("visited").asBoolean)
         assertTrue(gson.toJsonTree(request.copy(visited = true)).asJsonObject.get("visited").asBoolean)
+        val avoid = gson.toJsonTree(request.copy(visited = true, createVisitStatus = "avoid")).asJsonObject
+        assertTrue(avoid.get("visited").asBoolean)
+        assertEquals("avoid", avoid.get("visitStatus").asString)
+        assertFalse(json.has("visitStatus"))
     }
 
     @Test
-    fun visitPhotoAndRatingRequestsUseDocumentedFields() {
+    fun visitAndRatingRequestsUseDocumentedFields() {
         assertEquals(
             "avoid",
             gson.toJsonTree(UpdateVisitStatusRequest("avoid"))
                 .asJsonObject.get("status").asString
         )
-        val image = gson.toJsonTree(
-            AddPlaceImageRequest("https://example.com/image.jpg", "Widok")
-        ).asJsonObject
-        assertEquals("https://example.com/image.jpg", image.get("imageUrl").asString)
-        assertEquals("Widok", image.get("caption").asString)
         assertEquals(
             5,
             gson.toJsonTree(SubmitRatingRequest(5)).asJsonObject.get("score").asInt

@@ -12,12 +12,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -32,7 +34,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
@@ -41,10 +42,12 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
@@ -54,6 +57,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
 import com.zwiedzak.data.model.CreatePlaceRequest
 import com.zwiedzak.data.model.Place
+import com.zwiedzak.data.model.VisitStatus
 import com.zwiedzak.ui.CategoriesState
 import com.zwiedzak.ui.PlaceActionState
 import com.zwiedzak.ui.VisitHistoryState
@@ -77,12 +81,14 @@ fun AddPlaceDialog(
     categoriesState: CategoriesState,
     onDismiss: () -> Unit,
     onRetryCategories: () -> Unit,
-    onSubmit: (CreatePlaceRequest, Uri?, String, Boolean) -> Unit,
+    onSubmit: (CreatePlaceRequest, Uri?, String) -> Unit,
     editPlace: Place? = null,
     isAuthenticated: Boolean = true,
     historyState: VisitHistoryState = VisitHistoryState.Loading,
     onRetryHistory: () -> Unit = {},
-    onAuthClick: () -> Unit = {}
+    onAuthClick: () -> Unit = {},
+    onRecordVisit: (() -> Unit)? = null,
+    onRatePlace: ((Int) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val canEdit = editPlace == null || isAuthenticated
@@ -96,16 +102,21 @@ fun AddPlaceDialog(
     var description by remember { mutableStateOf(editPlace?.description.orEmpty()) }
     var hasAccommodation by remember { mutableStateOf(editPlace?.hasAccommodation == 1) }
     var hasFood by remember { mutableStateOf(editPlace?.hasFood == 1) }
-    var visited by remember { mutableStateOf(editPlace?.visitState?.isVisited == true) }
-    var visibility by remember {
-        mutableStateOf(if (editPlace == null || !editPlace.canEdit) "private" else editPlace.visibility.orEmpty())
-    }
-    var confirmDistinct by remember { mutableStateOf(false) }
+    var visitStatus by remember { mutableStateOf(editPlace?.visitState ?: VisitStatus.PLANNED) }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
     var imageCaption by remember { mutableStateOf("") }
     var cameraImagePath by remember { mutableStateOf<String?>(null) }
     var historyExpanded by remember { mutableStateOf(false) }
     var selectedVisit by remember { mutableStateOf("") }
+    var showPhotoConfirmation by remember { mutableStateOf(false) }
+    var showDuplicateConfirmation by remember { mutableStateOf(false) }
+    var pendingAction by remember { mutableStateOf<EditExtraAction?>(null) }
+    var selectedRating by remember { mutableStateOf(0) }
+    val currentCameraPath by rememberUpdatedState(cameraImagePath)
+
+    DisposableEffect(Unit) {
+        onDispose { currentCameraPath?.let { File(it).delete() } }
+    }
 
     val galleryPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -143,12 +154,35 @@ fun AddPlaceDialog(
         selectedCategory != null &&
         parsedLatitude != null && parsedLatitude in -90.0..90.0 &&
         parsedLongitude != null && parsedLongitude in -180.0..180.0)) &&
-        actionState !is PlaceActionState.Loading
+        actionState !is PlaceActionState.Loading && actionState !is PlaceActionState.CreatedWithWarning
+
+    val formRequest = CreatePlaceRequest(
+        name = name.trim(),
+        category = selectedCategory?.code ?: categoryCode,
+        latitude = parsedLatitude ?: 0.0,
+        longitude = parsedLongitude ?: 0.0,
+        address = address.trim().takeIf { it.isNotEmpty() },
+        description = description.trim().takeIf { it.isNotEmpty() },
+        hasAccommodation = hasAccommodation,
+        hasFood = hasFood,
+        visibility = "public",
+        confirmDistinct = editPlace != null && actionState is PlaceActionState.EditConflict,
+        visited = visitStatus.isVisited,
+        editVisitStatus = if (editPlace != null) visitStatus else null,
+        createVisitStatus = if (editPlace == null && visitStatus == VisitStatus.AVOID) visitStatus.apiValue else null
+    )
+    val conflict = actionState as? PlaceActionState.CreateConflict
+    val matchingConflict = editPlace == null && conflict?.request == formRequest
+    val submit: (Boolean) -> Unit = { confirmDistinct ->
+        onSubmit(formRequest.copy(confirmDistinct = formRequest.confirmDistinct || confirmDistinct), selectedImageUri, imageCaption)
+    }
 
     AlertDialog(
         onDismissRequest = {
-            cameraImagePath?.let { File(it).delete() }
-            onDismiss()
+            if (actionState !is PlaceActionState.Loading) {
+                cameraImagePath?.let { File(it).delete() }
+                onDismiss()
+            }
         },
         title = { Text(if (editPlace == null) "Dodaj miejsce" else "Edycja miejsca") },
         text = {
@@ -215,10 +249,7 @@ fun AddPlaceDialog(
                     }
                 }
                 Text("Zdjęcie (opcjonalnie)", style = MaterialTheme.typography.titleSmall)
-                editPlace?.images.orEmpty().forEach { image ->
-                    AsyncImage(model = image.imageUrl, contentDescription = image.caption ?: "Zdjęcie miejsca",
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 160.dp))
-                }
+                if (isAuthenticated && editPlace != null) PlacePhotoGallery(editPlace)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.Center
@@ -351,56 +382,69 @@ fun AddPlaceDialog(
                     label = { Text("Opis (opcjonalnie)") },
                     modifier = Modifier.fillMaxWidth()
                 )
-                Text("Widoczność", style = MaterialTheme.typography.titleSmall)
-                if (editPlace != null && editPlace.canEdit && visibility.isBlank()) {
-                    Text("Brak informacji o widoczności.", style = MaterialTheme.typography.bodySmall)
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    listOf("private" to "Prywatne", "public" to "Publiczne")
-                        .forEach { (value, label) ->
-                        RadioButton(
-                            selected = visibility == value,
-                            onClick = { visibility = value },
-                            enabled = (editPlace == null || (!editPlace.canEdit && isAuthenticated)) &&
-                                actionState !is PlaceActionState.Loading
+                Text(
+                    if (editPlace == null) "Nowe miejsce będzie widoczne dla wszystkich. Zdjęcie będzie prywatne."
+                    else "Zmiany danych i zdjęcia są widoczne tylko dla Ciebie.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                if (editPlace == null) {
+                    Column {
+                        VisitStatusCheckboxes(
+                            status = visitStatus,
+                            showAvoid = true,
+                            enabled = isAuthenticated && actionState !is PlaceActionState.Loading,
+                            onChange = { visitStatus = it }
                         )
-                        Text(label)
+                        val enabled = isAuthenticated && actionState !is PlaceActionState.Loading
+                        NewPlaceCheckbox("Jest hotel / nocleg", hasAccommodation, enabled) { hasAccommodation = it }
+                        NewPlaceCheckbox("Jest restauracja / jedzenie", hasFood, enabled) { hasFood = it }
                     }
-                    if (editPlace != null && !editPlace.canEdit && isAuthenticated) {
-                        Text(
-                            if (visibility == "public") {
-                                "Zmiany danych zostaną zapisane we wspólnym miejscu i będą widoczne dla wszystkich."
-                            } else {
-                                "Zmiany danych utworzą Twoją prywatną kopię. Sam zapis wizyty nie tworzy kopii."
-                            },
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
+                } else {
+                    VisitStatusCheckboxes(
+                        status = visitStatus,
+                        showAvoid = true,
+                        enabled = isAuthenticated && actionState !is PlaceActionState.Loading,
+                        onChange = { visitStatus = it }
+                    )
                 }
-                if (visibility == "public" && editPlace == null) {
+                if (editPlace != null && isAuthenticated) {
                     Text(
-                        "Publiczna propozycja wymaga zatwierdzenia przez administratora.",
+                        "Ostatnia wizyta: " + (editPlace.lastVisitedAt?.let(::formatVisitTime)
+                            ?: "Brak zapisanej wizyty"),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        "Zmiana na odwiedzone zapisze wizytę.",
                         style = MaterialTheme.typography.bodySmall
                     )
-
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(
-                        checked = visited,
-                        onCheckedChange = { visited = it },
-                        enabled = isAuthenticated && actionState !is PlaceActionState.Loading
-                    )
-                    Text("Oznacz jako odwiedzone")
-                }
-                if (editPlace != null && isAuthenticated && visited) {
-                    Text(
-                        "Zapis z zaznaczonym polem doda kolejną wizytę.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                    if (editPlace.visitState.isVisited && onRecordVisit != null) {
+                        TextButton(
+                            onClick = { pendingAction = EditExtraAction.RECORD_VISIT },
+                            enabled = actionState !is PlaceActionState.Loading
+                        ) { Text("Zapisz kolejną wizytę") }
+                    }
+                    if (onRatePlace != null) {
+                        Text("Oceń miejsce", style = MaterialTheme.typography.titleSmall)
+                        Row {
+                            (1..5).forEach { score ->
+                                IconButton(
+                                    onClick = { selectedRating = score },
+                                    enabled = actionState !is PlaceActionState.Loading
+                                ) {
+                                    Icon(
+                                        Icons.Default.Star,
+                                        contentDescription = "$score gwiazdek",
+                                        tint = if (score <= selectedRating) MaterialTheme.colorScheme.primary
+                                            else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                        TextButton(
+                            onClick = { pendingAction = EditExtraAction.RATE },
+                            enabled = selectedRating in 1..5 && actionState !is PlaceActionState.Loading
+                        ) { Text("Zapisz ocenę") }
+                    }
                 }
                 if (editPlace != null && isAuthenticated) {
                     when (val history = historyState) {
@@ -436,28 +480,23 @@ fun AddPlaceDialog(
                 if (editPlace != null && !isAuthenticated) {
                     TextButton(onClick = onAuthClick) { Text("Zaloguj się, aby zapisać status wizyty") }
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(
-                        checked = hasAccommodation,
-                        onCheckedChange = { hasAccommodation = it },
-                        enabled = canEdit
-                    )
-                    Text("Jest hotel / nocleg")
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(
-                        checked = hasFood,
-                        onCheckedChange = { hasFood = it },
-                        enabled = canEdit
-                    )
-                    Text("Jest restauracja / jedzenie")
-                }
-                if (editPlace == null) Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(
-                        checked = confirmDistinct,
-                        onCheckedChange = { confirmDistinct = it }
-                    )
-                    Text("Potwierdzam, że to odrębne miejsce")
+                if (editPlace != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = hasAccommodation,
+                            onCheckedChange = { hasAccommodation = it },
+                            enabled = canEdit
+                        )
+                        Text("Jest hotel / nocleg")
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = hasFood,
+                            onCheckedChange = { hasFood = it },
+                            enabled = canEdit
+                        )
+                        Text("Jest restauracja / jedzenie")
+                    }
                 }
                 when (actionState) {
                     is PlaceActionState.Error -> Text(
@@ -471,6 +510,11 @@ fun AddPlaceDialog(
                         "Nie wiadomo, czy zapis się powiódł. Ponowienie może dopisać drugą wizytę.\n${actionState.details}",
                         color = MaterialTheme.colorScheme.error
                     )
+                    is PlaceActionState.CreateConflict -> Text(
+                        if (matchingConflict) "Znaleziono podobne miejsca. Sprawdź je przed dodaniem."
+                        else "Dane zostały zmienione. Sprawdź ponownie podobne miejsca.",
+                        color = MaterialTheme.colorScheme.error
+                    )
                     else -> Unit
                 }
             }
@@ -479,29 +523,19 @@ fun AddPlaceDialog(
             Button(
                 enabled = canSubmit,
                 onClick = {
-                    onSubmit(
-                        CreatePlaceRequest(
-                            name = name.trim(),
-                            category = selectedCategory?.code ?: categoryCode,
-                            latitude = parsedLatitude ?: 0.0,
-                            longitude = parsedLongitude ?: 0.0,
-                            address = address.trim().takeIf { it.isNotEmpty() },
-                            description = description.trim().takeIf { it.isNotEmpty() },
-                            hasAccommodation = hasAccommodation,
-                            hasFood = hasFood,
-                            visibility = visibility,
-                            confirmDistinct = confirmDistinct || actionState is PlaceActionState.EditConflict,
-                            visited = visited
-                        ),
-                        selectedImageUri,
-                        imageCaption,
-                        editPlace != null && !editPlace.canEdit && visibility == "public"
-                    )
+                    if (editPlace != null && selectedImageUri != null) {
+                        showPhotoConfirmation = true
+                    } else if (matchingConflict) {
+                        showDuplicateConfirmation = true
+                    } else {
+                        submit(false)
+                    }
                 }
             ) {
                 Text(when {
                     actionState is PlaceActionState.EditConflict -> "Potwierdź i zapisz"
                     actionState is PlaceActionState.EditUncertain -> "Zapisz ponownie"
+                    matchingConflict -> "Sprawdź podobne"
                     editPlace != null -> "Zapisz"
                     else -> "Dodaj"
                 })
@@ -521,6 +555,60 @@ fun AddPlaceDialog(
         }
     )
 
+    if (showPhotoConfirmation && isAuthenticated) {
+        ConfirmAddPhotoDialog(
+            onConfirm = {
+                showPhotoConfirmation = false
+                submit(false)
+            },
+            onDismiss = { showPhotoConfirmation = false }
+        )
+    }
+
+    if (showDuplicateConfirmation && matchingConflict) {
+        AlertDialog(
+            onDismissRequest = { showDuplicateConfirmation = false },
+            title = { Text("Podobne miejsca") },
+            text = {
+                Column(
+                    modifier = Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("Sprawdź, czy miejsce już istnieje. Czy na pewno dodajesz inne miejsce?")
+                    conflict.candidates.forEach { candidate ->
+                        val distance = candidate.distanceMeters?.let { " ($it m)" }.orEmpty()
+                        val address = candidate.address?.takeIf { it.isNotBlank() }?.let { "\n$it" }.orEmpty()
+                        Text("${candidate.name}$distance$address")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDuplicateConfirmation = false; submit(true) }) {
+                    Text("To inne miejsce")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDuplicateConfirmation = false }) { Text("Wróć") }
+            }
+        )
+    }
+
+    pendingAction?.let { action ->
+        AlertDialog(
+            onDismissRequest = { pendingAction = null },
+            title = { Text(if (action == EditExtraAction.RECORD_VISIT) "Zapisz kolejną wizytę" else "Zapisz ocenę") },
+            text = { Text("Niezapisane zmiany w formularzu nie zostaną zapisane. Czy chcesz kontynuować?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingAction = null
+                    if (action == EditExtraAction.RECORD_VISIT) onRecordVisit?.invoke()
+                    else onRatePlace?.invoke(selectedRating)
+                }) { Text("Kontynuuj") }
+            },
+            dismissButton = { TextButton(onClick = { pendingAction = null }) { Text("Anuluj") } }
+        )
+    }
+
     if (showLocationPicker) {
         PlaceLocationPickerDialog(
             latitude = parsedLatitude!!,
@@ -535,7 +623,21 @@ fun AddPlaceDialog(
     }
 }
 
-private fun formatVisitTime(value: String): String {
+private enum class EditExtraAction { RECORD_VISIT, RATE }
+
+@Composable
+private fun NewPlaceCheckbox(label: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier.heightIn(min = 48.dp)
+            .toggleable(value = checked, enabled = enabled, role = Role.Checkbox, onValueChange = onChange),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Checkbox(checked = checked, onCheckedChange = null, enabled = enabled)
+        Text(label, maxLines = 1, softWrap = false)
+    }
+}
+
+internal fun formatVisitTime(value: String): String {
     val input = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.ROOT).apply {
         timeZone = TimeZone.getTimeZone("UTC")
         isLenient = false

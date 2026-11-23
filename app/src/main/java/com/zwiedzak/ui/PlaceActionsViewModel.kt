@@ -6,16 +6,20 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
 import com.google.gson.JsonElement
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.zwiedzak.data.model.ApiErrorResponse
-import com.zwiedzak.data.model.AddPlaceImageRequest
 import com.zwiedzak.data.model.CreatePlaceRequest
+import com.zwiedzak.data.model.DuplicatePlace
 import com.zwiedzak.data.model.PlaceCategory
 import com.zwiedzak.data.model.Place
 import com.zwiedzak.data.model.PlaceVisit
+import com.zwiedzak.data.model.VisitStatus
 import com.zwiedzak.data.network.loadVisitPages
 import com.zwiedzak.data.model.editPlacePayload
 import com.zwiedzak.data.model.parseEditPlaceResult
+import com.zwiedzak.data.model.parseCreatePlaceConflict
+import com.zwiedzak.data.model.isCreatedAvoidVisitConfirmed
 import com.zwiedzak.data.model.SubmitRatingRequest
 import com.zwiedzak.data.model.UpdateVisitStatusRequest
 import com.zwiedzak.data.network.RetrofitInstance
@@ -49,6 +53,8 @@ sealed interface PlaceActionState {
     ) : PlaceActionState
     data class EditConflict(val details: String, val payload: String) : PlaceActionState
     data class EditUncertain(val details: String) : PlaceActionState
+    data class CreateConflict(val request: CreatePlaceRequest, val candidates: List<DuplicatePlace>) : PlaceActionState
+    data class CreatedWithWarning(val message: String) : PlaceActionState
 }
 
 sealed interface VisitHistoryState {
@@ -129,10 +135,10 @@ class PlaceActionsViewModel : ViewModel() {
                     }
                 }
 
-                fun editPlace(context: Context, original: Place, request: CreatePlaceRequest, imageUri: Uri?, caption: String, applyToShared: Boolean) {
+                fun editPlace(context: Context, original: Place, request: CreatePlaceRequest, imageUri: Uri?, caption: String) {
                     viewModelScope.launch {
                         val placeId = original.id
-                        val json = editPlacePayload(original, request, applyToShared)
+                        val json = editPlacePayload(original, request)
                         val unconfirmed = json.deepCopy().apply { remove("confirmDistinct") }.toString()
                         val conflict = _state.value as? PlaceActionState.EditConflict
                         if (request.confirmDistinct && conflict != null && conflict.payload != unconfirmed) {
@@ -236,24 +242,46 @@ class PlaceActionsViewModel : ViewModel() {
         viewModelScope.launch {
             _state.value = PlaceActionState.Loading
             var placeCreated = false
+            var statusWarning: String? = null
             try {
                 val response = RetrofitInstance.nonRetryingApi.createPlace(request)
+                if (response.code() == 409) {
+                    val candidates = parseCreatePlaceConflict(response.errorBody()?.use { it.string() }.orEmpty())
+                    _state.value = if (candidates != null) {
+                        PlaceActionState.CreateConflict(request.copy(confirmDistinct = false), candidates)
+                    } else {
+                        PlaceActionState.Error("Serwer odrzucił dodanie miejsca (HTTP 409).")
+                    }
+                    return@launch
+                }
                 if (!response.isSuccessful) throw HttpException(response)
                 placeCreated = true
 
+                val locationPlaceId = response.headers()["Location"]
+                    ?.substringAfterLast('/')
+                    ?.takeIf { it.isNotBlank() }
+                val responseBody = if (request.createVisitStatus != null || (imageUri != null && locationPlaceId == null)) {
+                    response.body()?.use { it.string() }
+                } else null
+                if (request.createVisitStatus == VisitStatus.AVOID.apiValue &&
+                    !isCreatedAvoidVisitConfirmed(responseBody)) {
+                    statusWarning = "Nie potwierdzono statusu „Nie wracam” i daty wizyty. Sprawdź miejsce; może być potrzebna aktualizacja serwera."
+                }
                 if (imageUri == null) {
-                    _state.value = PlaceActionState.Success("Miejsce zostało dodane.")
+                    _state.value = if (statusWarning == null) {
+                        PlaceActionState.Success("Miejsce zostało dodane.")
+                    } else {
+                        PlaceActionState.CreatedWithWarning("Miejsce zostało dodane. $statusWarning")
+                    }
                     return@launch
                 }
 
-                val placeId = response.headers()["Location"]
-                    ?.substringAfterLast('/')
-                    ?.takeIf { it.isNotBlank() }
-                    ?: response.body()?.string()?.let(::extractCreatedPlaceId)
+                val placeId = locationPlaceId ?: responseBody?.let(::extractCreatedPlaceId)
 
                 if (placeId == null) {
-                    _state.value = PlaceActionState.Success(
-                        "Miejsce dodano, ale API nie zwróciło jego ID, więc zdjęcia nie można było dodać."
+                    _state.value = PlaceActionState.CreatedWithWarning(
+                        listOfNotNull("Miejsce dodano, ale API nie zwróciło jego ID, więc zdjęcia nie można było dodać.", statusWarning)
+                            .joinToString(" ")
                     )
                     return@launch
                 }
@@ -265,18 +293,21 @@ class PlaceActionsViewModel : ViewModel() {
                     caption
                 )
                 _state.value = if (imageResponse.isSuccessful) {
-                    PlaceActionState.Success("Miejsce i zdjęcie zostały dodane.")
+                    if (statusWarning == null) PlaceActionState.Success("Miejsce i zdjęcie zostały dodane.")
+                    else PlaceActionState.CreatedWithWarning("Miejsce i zdjęcie zostały dodane. $statusWarning")
                 } else {
-                    PlaceActionState.Success(
-                        "Miejsce dodano, ale zdjęcie nie zostało przesłane (HTTP ${imageResponse.code()})."
+                    PlaceActionState.CreatedWithWarning(
+                        listOfNotNull("Miejsce dodano, ale zdjęcie nie zostało przesłane (HTTP ${imageResponse.code()}).", statusWarning)
+                            .joinToString(" ")
                     )
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: HttpException) {
                 if (placeCreated) {
-                    _state.value = PlaceActionState.Success(
-                        "Miejsce dodano, ale nie udało się przesłać zdjęcia (HTTP ${e.code()})."
+                    _state.value = PlaceActionState.CreatedWithWarning(
+                        listOfNotNull("Miejsce dodano, ale nie udało się przesłać zdjęcia (HTTP ${e.code()}).", statusWarning)
+                            .joinToString(" ")
                     )
                 } else {
                     _state.value = PlaceActionState.Error(
@@ -291,7 +322,16 @@ class PlaceActionsViewModel : ViewModel() {
             } catch (e: Exception) {
                 val message = e.localizedMessage ?: "Wystąpił nieznany błąd."
                 _state.value = if (placeCreated) {
-                    PlaceActionState.Success("Miejsce dodano, ale zdjęcie nie zostało przesłane: $message")
+                    PlaceActionState.CreatedWithWarning(
+                        listOfNotNull(
+                            if (imageUri == null) {
+                                "Miejsce dodano, ale nie udało się potwierdzić statusu: $message"
+                            } else {
+                                "Miejsce dodano, ale nie udało się potwierdzić statusu lub przesłać zdjęcia: $message"
+                            },
+                            statusWarning
+                        ).joinToString(" ")
+                    )
                 } else if (e is IOException) {
                     PlaceActionState.Error(
                         "Nie wiadomo, czy miejsce zostało dodane. " +
@@ -300,6 +340,41 @@ class PlaceActionsViewModel : ViewModel() {
                 } else {
                     PlaceActionState.Error(message)
                 }
+            }
+        }
+    }
+
+    fun updateVisitSelection(placeId: String, status: VisitStatus) {
+        viewModelScope.launch {
+            _state.value = PlaceActionState.Loading
+            try {
+                val body = JsonObject().apply { addProperty("visitStatus", status.apiValue) }
+                    .toString().toRequestBody("application/json".toMediaType())
+                val response = RetrofitInstance.nonRetryingApi.editPlace(placeId, body)
+                response.body()?.close()
+                if (!response.isSuccessful) {
+                    if (response.code() >= 500 || response.code() == 408) {
+                        _state.value = PlaceActionState.Error(
+                            "Nie wiadomo, czy status został zapisany (HTTP ${response.code()}). Sprawdź odświeżony status."
+                        )
+                        loadPlaceDetails(placeId)
+                    } else {
+                        _state.value = PlaceActionState.Error(httpErrorMessage(HttpException(response)))
+                    }
+                    return@launch
+                }
+                _state.value = PlaceActionState.Success("Zapisano status wizyty.")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                _state.value = PlaceActionState.Error(
+                    "Nie wiadomo, czy status został zapisany. Sprawdź odświeżony status: ${e.localizedMessage}"
+                )
+                loadPlaceDetails(placeId)
+            } catch (e: Exception) {
+                _state.value = PlaceActionState.Error(
+                    "Nie udało się zapisać statusu: ${e.localizedMessage ?: "nieznany błąd"}."
+                )
             }
         }
     }
@@ -371,14 +446,6 @@ class PlaceActionsViewModel : ViewModel() {
         loadPlaceDetails(placeId)
     }
 
-    fun addImage(placeId: String, imageUrl: String, caption: String) =
-        perform("Dodano zdjęcie.") {
-            RetrofitInstance.api.addPlaceImage(
-                placeId,
-                AddPlaceImageRequest(imageUrl, caption.trim().takeIf { it.isNotEmpty() })
-            )
-        }
-
     fun uploadImage(context: Context, placeId: String, uri: Uri, caption: String) =
         perform("Dodano zdjęcie.") {
             uploadImageRequest(context.applicationContext, placeId, uri, caption)
@@ -432,7 +499,7 @@ class PlaceActionsViewModel : ViewModel() {
             )
             val captionPart = caption.trim().takeIf { it.isNotEmpty() }
                 ?.toRequestBody("text/plain".toMediaType())
-            RetrofitInstance.api.uploadPlaceImage(placeId, imagePart, captionPart)
+            RetrofitInstance.nonRetryingApi.uploadPlaceImage(placeId, imagePart, captionPart)
         } finally {
             imageFile.delete()
         }

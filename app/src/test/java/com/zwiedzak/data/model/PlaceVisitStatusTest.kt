@@ -7,6 +7,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlaceVisitStatusTest {
+    @Test
+    fun checkboxesKeepVisitAndAvoidInSync() {
+        assertEquals(VisitStatus.AVOID, VisitStatus.PLANNED.withAvoid(true))
+        assertTrue(VisitStatus.PLANNED.withAvoid(true).isVisited)
+        assertEquals(VisitStatus.VISITED, VisitStatus.AVOID.withAvoid(false))
+        assertEquals(VisitStatus.PLANNED, VisitStatus.AVOID.withVisited(false))
+        assertEquals(VisitStatus.AVOID, VisitStatus.AVOID.withVisited(true))
+        assertEquals(VisitStatus.VISITED, VisitStatus.PLANNED.withVisited(true))
+    }
+
 
     @Test
     fun visitedCheckboxIncludesAvoidAndExcludesPlanned() {

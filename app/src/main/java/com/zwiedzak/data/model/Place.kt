@@ -128,6 +128,12 @@ enum class VisitStatus(val apiValue: String, val label: String) {
     val isVisited: Boolean
         get() = this == VISITED || this == AVOID
 
+    fun withVisited(checked: Boolean): VisitStatus =
+        if (!checked) PLANNED else if (this == AVOID) AVOID else VISITED
+
+    fun withAvoid(checked: Boolean): VisitStatus =
+        if (checked) AVOID else if (this == AVOID) VISITED else this
+
     companion object {
         fun fromApiValue(value: String?): VisitStatus =
             entries.firstOrNull { it.apiValue.equals(value?.trim(), ignoreCase = true) } ?: PLANNED
